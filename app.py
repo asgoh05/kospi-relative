@@ -36,7 +36,14 @@ st.markdown(
 UP = "#e84855"      # 상승(빨강, 한국식)
 DOWN = "#2d7dd2"    # 하락(파랑)
 GRID = "rgba(120,120,120,0.15)"
-RANK_ICON = {"up": "▲", "down": "▼", "same": "·", "new": "🆕"}
+
+# 모바일에서 차트 터치로 화면이 안 넘어가는 문제 방지: 드래그/줌/툴바 비활성화
+PLOTLY_CONFIG = {
+    "displayModeBar": False,
+    "scrollZoom": False,
+    "doubleClick": False,
+    "staticPlot": False,
+}
 
 
 def color_for(v: float | None) -> str:
@@ -49,6 +56,17 @@ def fmt_pct(v: float | None) -> str:
     if v is None or pd.isna(v):
         return "—"
     return f"{v:+.2f}%"
+
+
+def chg_icon(v: float | None) -> str:
+    """전일 대비 등락 아이콘."""
+    if v is None or pd.isna(v):
+        return "·"
+    if v > 0:
+        return "▲"
+    if v < 0:
+        return "▼"
+    return "·"
 
 
 # ---------------------------------------------------------------- 사이드바
@@ -73,11 +91,20 @@ if query:
 # 2) 코스피 상위 20
 st.sidebar.markdown('<p class="sb-head">코스피 상위 20</p>', unsafe_allow_html=True)
 asof = D.last_trading_date()
-st.sidebar.caption(f"시가총액 기준 · {asof:%Y-%m-%d} (최근 영업일) · 화살표는 직전 대비 순위 변동")
+st.sidebar.caption(f"시가총액 기준 · {asof:%Y-%m-%d} 종가 · ▲▼는 전일 대비 등락")
 
-ranked = D.get_top_kospi_ranked(20)
+ranked = D.get_top_kospi_change(20)
+
+
+def _chg_text(v: float | None) -> str:
+    if v is None or pd.isna(v):
+        return ""
+    return f"{v:+.1f}%"
+
+
 top_labels = [
-    f"{r['rank']:>2}. {r['name']}  {RANK_ICON[r['change']]}" for r in ranked
+    f"{r['rank']:>2}. {r['name']}  {chg_icon(r['chg'])} {_chg_text(r['chg'])}".rstrip()
+    for r in ranked
 ]
 label_to_code = {lbl: r["code"] for lbl, r in zip(top_labels, ranked)}
 picked = st.sidebar.radio("코스피 상위 20", top_labels, index=0, label_visibility="collapsed")
@@ -207,8 +234,9 @@ with lc:
         height=400, margin=dict(l=10, r=10, t=50, b=50),
         legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
         plot_bgcolor="white", yaxis=dict(gridcolor=GRID), xaxis=dict(gridcolor=GRID),
+        dragmode=False,
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
 with rc:
     fig2 = go.Figure()
@@ -235,8 +263,9 @@ with rc:
         plot_bgcolor="white",
         yaxis=dict(gridcolor=GRID, ticksuffix="%", range=[ymin - pad, ymax + pad]),
         xaxis=dict(gridcolor=GRID),
+        dragmode=False,
     )
-    st.plotly_chart(fig2, width="stretch")
+    st.plotly_chart(fig2, width="stretch", config=PLOTLY_CONFIG)
 
 cur_excess = float(excess.iloc[-1]) if not excess.empty else None
 if cur_excess is not None:
@@ -279,8 +308,9 @@ with bl:
         height=420, margin=dict(l=10, r=10, t=50, b=20),
         plot_bgcolor="white", xaxis=dict(gridcolor=GRID, ticksuffix="%"),
         yaxis=dict(autorange="reversed"),
+        dragmode=False,
     )
-    st.plotly_chart(fig3, width="stretch")
+    st.plotly_chart(fig3, width="stretch", config=PLOTLY_CONFIG)
 
 with br:
     vals = tbl["초과"].tolist()
@@ -295,8 +325,9 @@ with br:
         height=420, margin=dict(l=10, r=10, t=50, b=20),
         plot_bgcolor="white", xaxis=dict(gridcolor=GRID, ticksuffix="%"),
         yaxis=dict(autorange="reversed"),
+        dragmode=False,
     )
-    st.plotly_chart(fig4, width="stretch")
+    st.plotly_chart(fig4, width="stretch", config=PLOTLY_CONFIG)
 
 # 표 (색상 히트맵)
 st.markdown("##### 상세 표")
