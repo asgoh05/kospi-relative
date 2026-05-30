@@ -7,9 +7,7 @@ FinanceDataReader 를 사용해 한국 주식과 코스피/코스닥 지수 시�
 from __future__ import annotations
 
 import datetime as dt
-import json
 import os
-from pathlib import Path
 
 import requests
 
@@ -124,64 +122,30 @@ def last_trading_date() -> dt.date:
     return d
 
 
-_RANK_FILE = Path(__file__).resolve().parent / ".cache" / "rank_snapshot.json"
+@st.cache_data(ttl=60 * 30, show_spinner=False)
+def prev_day_change(code: str) -> float | None:
+    """전일 종가 대비 최근 종가 등락률(%). 데이터 부족 시 None."""
+    s = get_close(code, dt.date.today() - dt.timedelta(days=14))
+    if s is None or len(s) < 2:
+        return None
+    prev, last = float(s.iloc[-2]), float(s.iloc[-1])
+    if prev == 0:
+        return None
+    return (last / prev - 1.0) * 100.0
 
 
-def _load_rank_snapshot() -> dict:
-    try:
-        return json.loads(_RANK_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+@st.cache_data(ttl=60 * 30, show_spinner=False)
+def get_top_kospi_change(n: int = 20) -> list[dict]:
+    """코스피 시총 상위 n개를 전일 대비 등락률과 함께 반환.
 
-
-def _save_rank_snapshot(snap: dict) -> None:
-    try:
-        _RANK_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _RANK_FILE.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def get_top_kospi_ranked(n: int = 20) -> list[dict]:
-    """코스피 시총 상위 n개를 순위 변동 정보와 함께 반환.
-
-    각 항목: {code, name, rank, change} (change: 'up'|'down'|'same'|'new')
-    변동은 직전(다른 날) 저장된 순위 스냅샷과 비교한다.
+    각 항목: {code, name, rank, chg} (chg: 전일 대비 등락률 %, None 가능)
+    순위는 최근 영업일 종가 기준 시가총액 순서이며, 캐시 만료(30분)마다 갱신된다.
     """
     pairs = get_top_kospi(n)
-    today = last_trading_date().isoformat()
-    cur_ranks = {code: i + 1 for i, (code, _name) in enumerate(pairs)}
-
-    snap = _load_rank_snapshot()
-    if not snap:  # 최초 실행: 기준 없음
-        prev_ranks: dict = {}
-        _save_rank_snapshot({"date": today, "ranks": cur_ranks,
-                             "prev_date": None, "prev_ranks": {}})
-    elif snap.get("date") == today:  # 같은 날: 기존 기준 유지
-        prev_ranks = snap.get("prev_ranks", {})
-        _save_rank_snapshot({"date": today, "ranks": cur_ranks,
-                             "prev_date": snap.get("prev_date"),
-                             "prev_ranks": prev_ranks})
-    else:  # 새로운 날: 어제 순위를 기준으로
-        prev_ranks = snap.get("ranks", {})
-        _save_rank_snapshot({"date": today, "ranks": cur_ranks,
-                             "prev_date": snap.get("date"),
-                             "prev_ranks": prev_ranks})
-
     out = []
-    for code, name in pairs:
-        rank = cur_ranks[code]
-        if not prev_ranks:
-            change = "same"
-        elif code not in prev_ranks:
-            change = "new"
-        elif prev_ranks[code] > rank:
-            change = "up"
-        elif prev_ranks[code] < rank:
-            change = "down"
-        else:
-            change = "same"
-        out.append({"code": code, "name": name, "rank": rank, "change": change})
+    for i, (code, name) in enumerate(pairs):
+        out.append({"code": code, "name": name, "rank": i + 1,
+                    "chg": prev_day_change(code)})
     return out
 
 
