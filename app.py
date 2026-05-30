@@ -27,6 +27,47 @@ st.markdown(
       h1 {font-size: 1.9rem;}
       .sb-head {font-size: 0.8rem; font-weight: 700; letter-spacing: .04em;
                 color: #6b7280; text-transform: uppercase; margin: 0 0 .25rem;}
+      section[data-testid="stSidebar"] .block-container {overflow-x: hidden;}
+      /* 상위20 행: 세로 간격 최소화 */
+      section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
+        gap: 0.2rem; align-items: center;
+      }
+      section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:has(.top20-rank) {
+        margin-bottom: 1px;
+      }
+      section[data-testid="stSidebar"] .top20-rank {
+        color: #b0b6bf; font-size: 0.7rem; font-weight: 700;
+        text-align: center; line-height: 1.85rem;
+      }
+      section[data-testid="stSidebar"] .top20-chg {
+        font-size: 0.78rem; font-weight: 600; text-align: right;
+        white-space: nowrap; line-height: 1.85rem; padding-right: 2px;
+      }
+      /* 종목 선택 버튼 (Streamlit 1.58 구조: data-testid=stButton 내부 button) */
+      section[data-testid="stSidebar"] [data-testid="stButton"] button {
+        padding: 0.18rem 0.5rem !important;
+        min-height: 1.85rem !important; height: 1.85rem !important;
+        font-size: 0.84rem !important; font-weight: 500 !important;
+        border: none !important; border-radius: 7px !important;
+        background: transparent !important; color: #1f2630 !important;
+        box-shadow: none !important; width: 100% !important;
+      }
+      section[data-testid="stSidebar"] [data-testid="stButton"] button p {
+        text-align: left !important; width: 100%;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      section[data-testid="stSidebar"] [data-testid="stButton"] button > div {
+        justify-content: flex-start !important; width: 100%;
+      }
+      section[data-testid="stSidebar"] [data-testid="stButton"] button:hover {
+        background: #f1f3f5 !important; color: #1f2630 !important;
+      }
+      /* 선택된 종목: 은은한 배경 + 좌측 빨간 강조선 */
+      section[data-testid="stSidebar"] [data-testid="stButton"] button[kind="primary"] {
+        background: #fdeef0 !important; color: #111 !important;
+        font-weight: 700 !important;
+        box-shadow: inset 3px 0 0 0 #e84855 !important;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -69,6 +110,20 @@ def chg_icon(v: float | None) -> str:
     return "·"
 
 
+def truncate_name(name: str) -> str:
+    """길이가 충분히 길 때만 줄여 표시 (대부분 종목명은 그대로 노출)."""
+    if len(name) > 9:
+        return name[:8] + "…"
+    return name
+
+
+def chg_html(v: float | None) -> str:
+    if v is None or pd.isna(v):
+        return '<span class="top20-chg" style="color:#888">—</span>'
+    color = UP if v >= 0 else DOWN
+    return f'<span class="top20-chg" style="color:{color}">{chg_icon(v)} {v:+.1f}%</span>'
+
+
 # ---------------------------------------------------------------- 사이드바
 st.sidebar.markdown("### 📈 코스피 상대강도")
 
@@ -94,21 +149,30 @@ asof = D.last_trading_date()
 st.sidebar.caption(f"시가총액 기준 · {asof:%Y-%m-%d} 종가 · ▲▼는 전일 대비 등락")
 
 ranked = D.get_top_kospi_change(20)
+top_codes = [r["code"] for r in ranked]
 
+if "list_code" not in st.session_state or st.session_state.list_code not in top_codes:
+    st.session_state.list_code = top_codes[0]
 
-def _chg_text(v: float | None) -> str:
-    if v is None or pd.isna(v):
-        return ""
-    return f"{v:+.1f}%"
+for r in ranked:
+    code, is_sel = r["code"], st.session_state.list_code == r["code"]
+    c_rank, c_name, c_chg = st.sidebar.columns([0.1, 0.62, 0.28], gap="small")
+    with c_rank:
+        st.markdown(f'<div class="top20-rank">{r["rank"]}</div>', unsafe_allow_html=True)
+    with c_name:
+        if st.button(
+            truncate_name(r["name"]),
+            key=f"top_{code}",
+            help=r["name"] if r["name"] != truncate_name(r["name"]) else None,
+            use_container_width=True,
+            type="primary" if is_sel else "secondary",
+        ):
+            st.session_state.list_code = code
+            st.rerun()
+    with c_chg:
+        st.markdown(chg_html(r["chg"]), unsafe_allow_html=True)
 
-
-top_labels = [
-    f"{r['rank']:>2}. {r['name']}  {chg_icon(r['chg'])} {_chg_text(r['chg'])}".rstrip()
-    for r in ranked
-]
-label_to_code = {lbl: r["code"] for lbl, r in zip(top_labels, ranked)}
-picked = st.sidebar.radio("코스피 상위 20", top_labels, index=0, label_visibility="collapsed")
-list_code = label_to_code[picked]
+list_code = st.session_state.list_code
 
 # 검색이 우선, 없으면 상위 20 선택
 selected_code = search_code or list_code
