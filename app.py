@@ -14,7 +14,7 @@ import streamlit as st
 import data as D
 import metrics as M
 
-st.set_page_config(page_title="코스피 대비 상대강도", page_icon="📈", layout="wide")
+st.set_page_config(page_title="국민투자자 모니터", page_icon="🇰🇷", layout="wide")
 
 st.markdown(
     """
@@ -27,6 +27,20 @@ st.markdown(
       h1 {font-size: 1.9rem;}
       .sb-head {font-size: 0.8rem; font-weight: 700; letter-spacing: .04em;
                 color: #6b7280; text-transform: uppercase; margin: 0 0 .25rem;}
+      /* 브랜드 헤더 */
+      .app-brand {display: flex; align-items: center; gap: 0.55rem;
+                  padding: 0.1rem 0 0.35rem;}
+      .app-brand .logo {
+        width: 2.1rem; height: 2.1rem; border-radius: 10px; flex: none;
+        display: grid; place-items: center; font-size: 1.1rem;
+        background: linear-gradient(135deg, #e84855 0%, #c0392b 100%);
+        box-shadow: 0 2px 6px rgba(232,72,85,0.35);
+      }
+      .app-brand .txt {line-height: 1.15;}
+      .app-brand .title {font-size: 1.12rem; font-weight: 800;
+                         color: #1a2230; letter-spacing: -0.01em;}
+      .app-brand .sub {font-size: 0.72rem; color: #8a929e; font-weight: 600;
+                       letter-spacing: 0.01em;}
       section[data-testid="stSidebar"] .block-container {overflow-x: hidden;}
       /* 상위20 행: 세로 간격 최소화 */
       section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
@@ -125,7 +139,18 @@ def chg_html(v: float | None) -> str:
 
 
 # ---------------------------------------------------------------- 사이드바
-st.sidebar.markdown("### 📈 코스피 상대강도")
+st.sidebar.markdown(
+    """
+    <div class="app-brand">
+      <div class="logo">🇰🇷</div>
+      <div class="txt">
+        <div class="title">국민투자자 모니터</div>
+        <div class="sub">코스피 대비 상대강도 · 추세</div>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # 1) 검색 — 가장 핵심 동선
 st.sidebar.markdown('<p class="sb-head">종목 검색</p>', unsafe_allow_html=True)
@@ -154,9 +179,10 @@ top_codes = [r["code"] for r in ranked]
 if "list_code" not in st.session_state or st.session_state.list_code not in top_codes:
     st.session_state.list_code = top_codes[0]
 
+list_box = st.sidebar.container(height=300)
 for r in ranked:
     code, is_sel = r["code"], st.session_state.list_code == r["code"]
-    c_rank, c_name, c_chg = st.sidebar.columns([0.1, 0.62, 0.28], gap="small")
+    c_rank, c_name, c_chg = list_box.columns([0.1, 0.62, 0.28], gap="small")
     with c_rank:
         st.markdown(f'<div class="top20-rank">{r["rank"]}</div>', unsafe_allow_html=True)
     with c_name:
@@ -239,7 +265,7 @@ st.subheader("① 코스피 대비 상대 성과")
 preset_days = {"1일": 1, "1주": 7, "2주": 14, "1개월": 30, "3개월": 91,
                "6개월": 182, "1년": 365, "3년": 365 * 3}
 preset_opts = list(preset_days.keys()) + ["YTD", "직접 지정(매수일)"]
-ctl = st.columns([2.6, 1.2, 1.2])
+ctl = st.columns([2.3, 1.1, 1.1, 1.1])
 
 with ctl[0]:
     preset = st.radio("기준 시점", preset_opts, index=5, horizontal=True)
@@ -268,6 +294,12 @@ with ctl[2]:
         help="지수 대비 누적 초과수익률이 이 값에 닿으면 매도하기로 한 계획선",
     )
 
+with ctl[3]:
+    peak_threshold = st.number_input(
+        "매도 기준 (고점 대비, %)", value=-10.0, step=1.0, format="%.1f",
+        help="표시 기간 중 최고가 대비 하락률이 이 값에 닿으면 매도하기로 한 계획선",
+    )
+
 start_ts = pd.Timestamp(start_date)
 stock = stock_full[stock_full.index >= start_ts]
 index = index_full[index_full.index >= start_ts]
@@ -285,6 +317,16 @@ s_norm = M.normalize_to_100(stock)
 i_norm = M.normalize_to_100(index)
 excess = M.excess_return_series(stock, index)
 
+# 기간 중 고점 대비 하락률
+peak_idx = stock.idxmax()
+peak_price = float(stock.loc[peak_idx])
+cur_price = float(stock.iloc[-1])
+drop_from_peak = (cur_price / peak_price - 1.0) * 100.0 if peak_price else 0.0
+peak_norm = float(s_norm.loc[peak_idx])
+cur_norm = float(s_norm.iloc[-1])
+last_idx = s_norm.index[-1]
+is_below_peak = drop_from_peak <= -0.05
+
 lc, rc = st.columns([1, 1])
 
 with lc:
@@ -293,6 +335,27 @@ with lc:
                              line=dict(color=UP, width=2.4)))
     fig.add_trace(go.Scatter(x=i_norm.index, y=i_norm.values, name=idx_label,
                              line=dict(color="#888", width=1.8, dash="dot")))
+    # 고점 기준선 + 고점 마커
+    fig.add_hline(y=peak_norm, line=dict(color="#c2c2c2", width=1, dash="dot"))
+    fig.add_trace(go.Scatter(
+        x=[peak_idx], y=[peak_norm], mode="markers+text",
+        marker=dict(color=UP, size=12, symbol="star",
+                    line=dict(color="white", width=1)),
+        text=["고점"], textposition="top center",
+        textfont=dict(size=11, color=UP), name="고점", showlegend=False,
+        hovertemplate=f"고점 {peak_price:,.0f}원 ({peak_idx:%Y-%m-%d})<extra></extra>",
+    ))
+    # 고점과 현재가 사이 간격 표시 (현재가가 고점보다 낮을 때)
+    if is_below_peak:
+        fig.add_shape(type="line", x0=last_idx, x1=last_idx,
+                      y0=cur_norm, y1=peak_norm,
+                      line=dict(color=UP, width=1.4, dash="dot"))
+        fig.add_annotation(
+            x=last_idx, y=(cur_norm + peak_norm) / 2,
+            text=f"고점대비 {drop_from_peak:.1f}%", showarrow=False,
+            font=dict(color=UP, size=11), xanchor="right", xshift=-6,
+            bgcolor="rgba(255,255,255,0.7)",
+        )
     fig.update_layout(
         title=dict(text="정규화 주가 (시작=100)", x=0, xanchor="left"),
         height=400, margin=dict(l=10, r=10, t=50, b=50),
@@ -346,6 +409,25 @@ if cur_excess is not None:
             f"**{gap:+.2f}%p** 남았습니다."
         )
         (st.success if cur_excess >= 0 else st.info)(msg)
+
+# 기간 중 고점 대비 하락률 (고점 대비 매도 기준선 적용)
+peak_gap = drop_from_peak - peak_threshold
+if drop_from_peak <= peak_threshold:
+    st.error(
+        f"⚠️ 표시 기간 중 최고가 {peak_price:,.0f}원({peak_idx:%Y-%m-%d}) 대비 현재 "
+        f"**{drop_from_peak:.2f}%** ({cur_price:,.0f}원) — "
+        f"고점 대비 매도 기준({peak_threshold:+.1f}%)에 도달/이탈했습니다."
+    )
+elif is_below_peak:
+    st.info(
+        f"표시 기간 중 최고가 {peak_price:,.0f}원({peak_idx:%Y-%m-%d}) 대비 현재 "
+        f"**{drop_from_peak:.2f}%** ({cur_price:,.0f}원) 떨어졌고, "
+        f"고점 대비 매도 기준({peak_threshold:+.1f}%)까지 **{peak_gap:+.2f}%p** 남았습니다."
+    )
+else:
+    st.success(
+        f"현재가 **{cur_price:,.0f}원** 이 표시 기간 중 최고가 수준입니다."
+    )
 
 st.markdown("---")
 
