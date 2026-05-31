@@ -29,7 +29,8 @@ st.markdown(
                 color: #6b7280; text-transform: uppercase; margin: 0 0 .25rem;}
       /* 브랜드 헤더 */
       .app-brand {display: flex; align-items: center; gap: 0.55rem;
-                  padding: 0.1rem 0 0.35rem;}
+                  padding: 0.25rem 0 1rem; margin-bottom: 1.25rem;
+                  border-bottom: 1px solid #eef0f3;}
       .app-brand .logo {
         width: 2.1rem; height: 2.1rem; border-radius: 10px; flex: none;
         display: grid; place-items: center; font-size: 1.1rem;
