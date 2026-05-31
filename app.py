@@ -83,6 +83,18 @@ st.markdown(
         font-weight: 700 !important;
         box-shadow: inset 3px 0 0 0 #e84855 !important;
       }
+      /* 모바일에서도 상위20 행이 줄바꿈되지 않도록 가로 배치 고정 */
+      section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+      }
+      section[data-testid="stSidebar"] div[data-testid="stColumn"] {
+        min-width: 0 !important;
+      }
+      /* 차트 위에서 세로 스크롤(손가락 위/아래)은 브라우저가 처리하도록 */
+      .js-plotly-plot, .js-plotly-plot .plotly, .plot-container,
+      [data-testid="stPlotlyChart"] {
+        touch-action: pan-y !important;
+      }
     </style>
     """,
     unsafe_allow_html=True,
