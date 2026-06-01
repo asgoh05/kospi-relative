@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+KST = ZoneInfo("Asia/Seoul")
 
 import data as D
 import metrics as M
@@ -95,6 +98,27 @@ st.markdown(
       [data-testid="stPlotlyChart"] {
         touch-action: pan-y !important;
       }
+      /* 컴팩트 헤더 지표 카드 */
+      .hdr-wrap {margin: 0.1rem 0 0.4rem;}
+      .hdr-title {font-size: 1.55rem; font-weight: 800; color: #1a2230;
+                  letter-spacing: -0.02em; line-height: 1.15;}
+      .hdr-sub {font-size: 0.78rem; color: #8a929e; font-weight: 500;
+                margin: 0.15rem 0 0.7rem;}
+      .hdr-sub b {color: #5b6470; font-weight: 700;}
+      .metrics-row {display: flex; gap: 0.5rem; flex-wrap: wrap;}
+      .mcard {flex: 1 1 110px; min-width: 105px;
+              background: #f7f8fa; border: 1px solid #eef0f3;
+              border-radius: 12px; padding: 0.6rem 0.8rem;}
+      .mcard .ml {font-size: 0.72rem; color: #8a929e; font-weight: 600;
+                  margin-bottom: 0.15rem; white-space: nowrap;}
+      .mcard .mv {font-size: 1.2rem; font-weight: 800; color: #1a2230;
+                  line-height: 1.2; white-space: nowrap;}
+      .mcard .md {font-size: 0.8rem; font-weight: 700; margin-top: 0.1rem;
+                  white-space: nowrap;}
+      /* 탭: 좀 더 또렷하게 */
+      button[data-baseweb="tab"] {font-size: 0.98rem !important;
+                                  font-weight: 700 !important;}
+      [data-testid="stTabs"] [data-baseweb="tab-list"] {gap: 0.4rem;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -124,6 +148,18 @@ def fmt_pct(v: float | None) -> str:
     if v is None or pd.isna(v):
         return "—"
     return f"{v:+.2f}%"
+
+
+def metric_card(label: str, value: str, delta: float | None, suffix: str = "%") -> str:
+    """컴팩트 지표 카드 HTML."""
+    if delta is None or pd.isna(delta):
+        md = '<div class="md" style="color:#9aa0a8">—</div>'
+    else:
+        c = UP if delta >= 0 else DOWN
+        arrow = "▲" if delta >= 0 else "▼"
+        md = f'<div class="md" style="color:{c}">{arrow} {delta:+.2f}{suffix}</div>'
+    return (f'<div class="mcard"><div class="ml">{label}</div>'
+            f'<div class="mv">{value}</div>{md}</div>')
 
 
 def chg_icon(v: float | None) -> str:
@@ -186,7 +222,8 @@ st.sidebar.markdown('<p class="sb-head">코스피 상위 20</p>', unsafe_allow_h
 asof = D.last_trading_date()
 st.sidebar.caption(f"시가총액 기준 · {asof:%Y-%m-%d} 종가 · ▲▼는 전일 대비 등락")
 
-ranked = D.get_top_kospi_change(20)
+with st.spinner("열심히 데이터를 수집하고 있습니다… 📊"):
+    ranked = D.get_top_kospi_change(20)
 top_codes = [r["code"] for r in ranked]
 
 if "list_code" not in st.session_state or st.session_state.list_code not in top_codes:
@@ -231,7 +268,7 @@ today = dt.date.today()
 fetch_start = today - dt.timedelta(days=365 * 5 + 30)
 
 name = D.get_name(selected_code)
-with st.spinner("시세 불러오는 중..."):
+with st.spinner(f"열심히 {name} 시세를 모으는 중이에요… 🐜💨"):
     stock_full = D.get_close(selected_code, fetch_start)
     index_full = D.get_index_close(market, fetch_start)
 
@@ -251,247 +288,34 @@ last_price = float(stock_full.iloc[-1])
 idx_last = float(index_full.iloc[-1]) if not index_full.empty else None
 ex_1d = row_1d["초과"]
 
-st.title(f"{name}")
-st.caption(
-    f"{selected_code} · 비교 지수 **{idx_label}** · 기준일 {stock_full.index[-1]:%Y-%m-%d}"
-)
+now_kst = dt.datetime.now(KST)
 
-c1, c2, c3 = st.columns(3)
-c1.metric("현재가", f"{last_price:,.0f}원", fmt_pct(row_1d["종목"]))
-c2.metric(
-    f"{idx_label} 지수",
-    f"{idx_last:,.2f}" if idx_last is not None else "—",
-    fmt_pct(row_1d["지수"]),
-)
-c3.metric(
-    "지수 대비 (전일)",
-    fmt_pct(ex_1d) + "p" if ex_1d is not None and not pd.isna(ex_1d) else "—",
-    help="종목 등락률 − 지수 등락률. 양수(빨강)면 시장보다 강하게 움직인 것.",
-)
-
-st.markdown("---")
-
-# ---------------------------------------------------------------- 1) 상대강도
-st.subheader("① 코스피 대비 상대 성과")
-
-# --- 기준 시점 & 매도 기준선 (섹션 내부에서 조절) ---
-preset_days = {"1일": 1, "1주": 7, "2주": 14, "1개월": 30, "3개월": 91,
-               "6개월": 182, "1년": 365, "3년": 365 * 3}
-preset_opts = list(preset_days.keys()) + ["YTD", "직접 지정(매수일)"]
-ctl = st.columns([2.3, 1.1, 1.1, 1.1])
-
-with ctl[0]:
-    preset = st.radio("기준 시점", preset_opts, index=5, horizontal=True)
-
-if preset == "YTD":
-    default_start = dt.date(today.year, 1, 1)
-elif preset == "직접 지정(매수일)":
-    default_start = today - dt.timedelta(days=182)
+if ex_1d is not None and not pd.isna(ex_1d):
+    ex_color = UP if ex_1d >= 0 else DOWN
+    ex_val = f'<span style="color:{ex_color}">{ex_1d:+.2f}%p</span>'
 else:
-    default_start = today - dt.timedelta(days=preset_days[preset])
-default_start = max(default_start, data_start)
+    ex_val = "—"
+ex_card = ('<div class="mcard"><div class="ml">지수 대비(전일)</div>'
+           f'<div class="mv">{ex_val}</div>'
+           '<div class="md" style="color:#9aa0a8;font-weight:500">'
+           '종목−지수 등락</div></div>')
 
-with ctl[1]:
-    if preset == "직접 지정(매수일)":
-        start_date = st.date_input(
-            "시작일 (매수일)", value=default_start,
-            min_value=data_start, max_value=data_end, format="YYYY-MM-DD",
-        )
-    else:
-        start_date = default_start
-        st.metric("시작일", f"{start_date:%Y-%m-%d}")
-
-with ctl[2]:
-    threshold = st.number_input(
-        "매도 기준 (지수 대비, %p)", value=-10.0, step=1.0, format="%.1f",
-        help="지수 대비 누적 초과수익률이 이 값에 닿으면 매도하기로 한 계획선",
-    )
-
-with ctl[3]:
-    peak_threshold = st.number_input(
-        "매도 기준 (고점 대비, %)", value=-10.0, step=1.0, format="%.1f",
-        help="표시 기간 중 최고가 대비 하락률이 이 값에 닿으면 매도하기로 한 계획선",
-    )
-
-start_ts = pd.Timestamp(start_date)
-stock = stock_full[stock_full.index >= start_ts]
-index = index_full[index_full.index >= start_ts]
-# 1일 등 짧은 기간에 거래일이 1개뿐이면 직전 거래일을 포함해 최소 2개 확보
-if len(stock) < 2:
-    stock = stock_full.tail(2)
-    index = index_full.tail(2)
-
-st.caption(
-    f"**{start_date:%Y-%m-%d}** 를 시작점(=100)으로 비교합니다. "
-    "오른쪽 그래프가 0보다 위면 시장 대비 강세, 빨간 점선(매도 기준)에 닿으면 계획 도달입니다."
+cards = (
+    metric_card("현재가", f"{last_price:,.0f}원", row_1d["종목"])
+    + metric_card(f"{idx_label} 지수",
+                  f"{idx_last:,.2f}" if idx_last is not None else "—", row_1d["지수"])
+    + ex_card
 )
-
-s_norm = M.normalize_to_100(stock)
-i_norm = M.normalize_to_100(index)
-excess = M.excess_return_series(stock, index)
-
-# 기간 중 고점 대비 하락률
-peak_idx = stock.idxmax()
-peak_price = float(stock.loc[peak_idx])
-cur_price = float(stock.iloc[-1])
-drop_from_peak = (cur_price / peak_price - 1.0) * 100.0 if peak_price else 0.0
-peak_norm = float(s_norm.loc[peak_idx])
-cur_norm = float(s_norm.iloc[-1])
-last_idx = s_norm.index[-1]
-is_below_peak = drop_from_peak <= -0.05
-
-lc, rc = st.columns([1, 1])
-
-with lc:
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=s_norm.index, y=s_norm.values, name=name,
-                             line=dict(color=UP, width=2.4)))
-    fig.add_trace(go.Scatter(x=i_norm.index, y=i_norm.values, name=idx_label,
-                             line=dict(color="#888", width=1.8, dash="dot")))
-    # 고점 기준선 + 고점 마커
-    fig.add_hline(y=peak_norm, line=dict(color="#c2c2c2", width=1, dash="dot"))
-    fig.add_trace(go.Scatter(
-        x=[peak_idx], y=[peak_norm], mode="markers+text",
-        marker=dict(color=UP, size=12, symbol="star",
-                    line=dict(color="white", width=1)),
-        text=["고점"], textposition="top center",
-        textfont=dict(size=11, color=UP), name="고점", showlegend=False,
-        hovertemplate=f"고점 {peak_price:,.0f}원 ({peak_idx:%Y-%m-%d})<extra></extra>",
-    ))
-    # 고점과 현재가 사이 간격 표시 (현재가가 고점보다 낮을 때)
-    if is_below_peak:
-        fig.add_shape(type="line", x0=last_idx, x1=last_idx,
-                      y0=cur_norm, y1=peak_norm,
-                      line=dict(color=UP, width=1.4, dash="dot"))
-        fig.add_annotation(
-            x=last_idx, y=(cur_norm + peak_norm) / 2,
-            text=f"고점대비 {drop_from_peak:.1f}%", showarrow=False,
-            font=dict(color=UP, size=11), xanchor="right", xshift=-6,
-            bgcolor="rgba(255,255,255,0.7)",
-        )
-    fig.update_layout(
-        title=dict(text="정규화 주가 (시작=100)", x=0, xanchor="left"),
-        height=400, margin=dict(l=10, r=10, t=50, b=50),
-        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
-        plot_bgcolor="white", yaxis=dict(gridcolor=GRID), xaxis=dict(gridcolor=GRID),
-        dragmode=False,
-    )
-    st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
-
-with rc:
-    fig2 = go.Figure()
-    pos = excess.clip(lower=0)
-    neg = excess.clip(upper=0)
-    fig2.add_trace(go.Scatter(x=excess.index, y=pos.values, fill="tozeroy",
-                              mode="none", name="시장 대비 강세", fillcolor="rgba(232,72,85,0.45)"))
-    fig2.add_trace(go.Scatter(x=excess.index, y=neg.values, fill="tozeroy",
-                              mode="none", name="시장 대비 약세", fillcolor="rgba(45,125,210,0.45)"))
-    fig2.add_hline(y=0, line=dict(color="#444", width=1))
-    fig2.add_hline(
-        y=threshold, line=dict(color=UP, width=1.4, dash="dash"),
-        annotation_text=f"매도 기준 {threshold:+.0f}%p",
-        annotation_position="bottom left",
-        annotation_font=dict(color=UP, size=11),
-    )
-    ymin = min(float(excess.min()), threshold, 0.0)
-    ymax = max(float(excess.max()), 0.0)
-    pad = max((ymax - ymin) * 0.10, 1.0)
-    fig2.update_layout(
-        title=dict(text="지수 대비 누적 초과수익률 (%)", x=0, xanchor="left"),
-        height=400, margin=dict(l=10, r=10, t=50, b=50),
-        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
-        plot_bgcolor="white",
-        yaxis=dict(gridcolor=GRID, ticksuffix="%", range=[ymin - pad, ymax + pad]),
-        xaxis=dict(gridcolor=GRID),
-        dragmode=False,
-    )
-    st.plotly_chart(fig2, width="stretch", config=PLOTLY_CONFIG)
-
-cur_excess = float(excess.iloc[-1]) if not excess.empty else None
-if cur_excess is not None:
-    gap = cur_excess - threshold
-    if cur_excess <= threshold:
-        st.error(
-            f"⚠️ {start_date:%Y-%m-%d} 이후 {name}의 주가는 {idx_label} 대비 "
-            f"**{cur_excess:+.2f}%p** — 매도 기준({threshold:+.1f}%p)에 도달/이탈했습니다."
-        )
-    else:
-        msg = (
-            f"{start_date:%Y-%m-%d}부터 지금까지 {name}의 주가는 {idx_label} 대비 "
-            f"**{cur_excess:+.2f}%p** 움직였고, 매도 기준({threshold:+.1f}%p)까지 "
-            f"**{gap:+.2f}%p** 남았습니다."
-        )
-        (st.success if cur_excess >= 0 else st.info)(msg)
-
-# 기간 중 고점 대비 하락률 (고점 대비 매도 기준선 적용)
-peak_gap = drop_from_peak - peak_threshold
-if drop_from_peak <= peak_threshold:
-    st.error(
-        f"⚠️ 표시 기간 중 최고가 {peak_price:,.0f}원({peak_idx:%Y-%m-%d}) 대비 현재 "
-        f"**{drop_from_peak:.2f}%** ({cur_price:,.0f}원) — "
-        f"고점 대비 매도 기준({peak_threshold:+.1f}%)에 도달/이탈했습니다."
-    )
-elif is_below_peak:
-    st.info(
-        f"표시 기간 중 최고가 {peak_price:,.0f}원({peak_idx:%Y-%m-%d}) 대비 현재 "
-        f"**{drop_from_peak:.2f}%** ({cur_price:,.0f}원) 떨어졌고, "
-        f"고점 대비 매도 기준({peak_threshold:+.1f}%)까지 **{peak_gap:+.2f}%p** 남았습니다."
-    )
-else:
-    st.success(
-        f"현재가 **{cur_price:,.0f}원** 이 표시 기간 중 최고가 수준입니다."
-    )
-
-st.markdown("---")
-
-# ---------------------------------------------------------------- 2) 추세 성장률
-st.subheader("② 추세 성장률 (기간별 한눈에 보기)")
-st.caption("어제·1주·1개월·3개월·6개월·YTD·1년 수익률을 막대로 비교합니다. "
-           "빨강=상승, 파랑=하락. 오른쪽은 '지수 대비' 초과수익률입니다.")
-
-tbl = returns_tbl.copy()
-labels = tbl["기간"].tolist()
-
-bl, br = st.columns([1, 1])
-
-with bl:
-    vals = tbl["종목"].tolist()
-    fig3 = go.Figure(go.Bar(
-        x=vals, y=labels, orientation="h",
-        marker_color=[color_for(v) for v in vals],
-        text=[fmt_pct(v) for v in vals], textposition="auto",
-    ))
-    fig3.add_vline(x=0, line=dict(color="#444", width=1))
-    fig3.update_layout(
-        title=dict(text="기간별 절대 수익률 (%)", x=0, xanchor="left"),
-        height=420, margin=dict(l=10, r=10, t=50, b=20),
-        plot_bgcolor="white", xaxis=dict(gridcolor=GRID, ticksuffix="%"),
-        yaxis=dict(autorange="reversed"),
-        dragmode=False,
-    )
-    st.plotly_chart(fig3, width="stretch", config=PLOTLY_CONFIG)
-
-with br:
-    vals = tbl["초과"].tolist()
-    fig4 = go.Figure(go.Bar(
-        x=vals, y=labels, orientation="h",
-        marker_color=[color_for(v) for v in vals],
-        text=[fmt_pct(v) for v in vals], textposition="auto",
-    ))
-    fig4.add_vline(x=0, line=dict(color="#444", width=1))
-    fig4.update_layout(
-        title=dict(text=f"기간별 {idx_label} 대비 초과수익률 (%p)", x=0, xanchor="left"),
-        height=420, margin=dict(l=10, r=10, t=50, b=20),
-        plot_bgcolor="white", xaxis=dict(gridcolor=GRID, ticksuffix="%"),
-        yaxis=dict(autorange="reversed"),
-        dragmode=False,
-    )
-    st.plotly_chart(fig4, width="stretch", config=PLOTLY_CONFIG)
-
-# 표 (색상 히트맵)
-st.markdown("##### 상세 표")
-disp = tbl.set_index("기간")
-
+st.markdown(
+    f"""
+    <div class="hdr-wrap">
+      <div class="hdr-title">{name}</div>
+      <div class="hdr-sub">{selected_code} · 비교 지수 <b>{idx_label}</b> ·
+        종가일 <b>{stock_full.index[-1]:%Y-%m-%d}</b> · 조회 {now_kst:%Y-%m-%d %H:%M} KST</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 def _style(v):
     if pd.isna(v):
@@ -500,11 +324,242 @@ def _style(v):
     return f"color:{c}; font-weight:600"
 
 
-styled = (
-    disp.style.format(lambda v: fmt_pct(v))
-    .map(_style)
-    .set_properties(**{"text-align": "right"})
+tab_dash, tab_rel, tab_trend = st.tabs(
+    ["🏠 대시보드", "📊 코스피 대비 성과", "📈 추세 성장률"]
 )
-st.dataframe(styled, width="stretch")
+
+# ---------------------------------------------------------------- 0) 대시보드
+with tab_dash:
+    st.markdown(f'<div class="metrics-row">{cards}</div>', unsafe_allow_html=True)
+
+# ---------------------------------------------------------------- 1) 상대강도
+with tab_rel:
+    # --- 기준 시점 & 매도 기준선 (모바일에선 기본 접힘) ---
+    preset_days = {"1일": 1, "1주": 7, "2주": 14, "1개월": 30, "3개월": 91,
+                   "6개월": 182, "1년": 365}
+    preset_opts = list(preset_days.keys()) + ["YTD", "직접 지정(매수일)"]
+
+    with st.expander("⚙️ 기준 시점 · 매도 기준 설정", expanded=False):
+        preset = st.radio("기준 시점", preset_opts, index=5, horizontal=True)
+
+        if preset == "YTD":
+            default_start = dt.date(today.year, 1, 1)
+        elif preset == "직접 지정(매수일)":
+            default_start = today - dt.timedelta(days=182)
+        else:
+            default_start = today - dt.timedelta(days=preset_days[preset])
+        default_start = max(default_start, data_start)
+
+        cset = st.columns([1.2, 1, 1])
+        with cset[0]:
+            if preset == "직접 지정(매수일)":
+                start_date = st.date_input(
+                    "시작일 (매수일)", value=default_start,
+                    min_value=data_start, max_value=data_end, format="YYYY-MM-DD",
+                )
+            else:
+                start_date = default_start
+                st.metric("시작일", f"{start_date:%Y-%m-%d}")
+
+        with cset[1]:
+            threshold = st.number_input(
+                "매도 기준 (지수 대비, %p)", value=-10.0, step=1.0, format="%.1f",
+                help="지수 대비 누적 초과수익률이 이 값에 닿으면 매도하기로 한 계획선",
+            )
+
+        with cset[2]:
+            peak_threshold = st.number_input(
+                "매도 기준 (고점 대비, %)", value=-10.0, step=1.0, format="%.1f",
+                help="표시 기간 중 최고가 대비 하락률이 이 값에 닿으면 매도하기로 한 계획선",
+            )
+
+    start_ts = pd.Timestamp(start_date)
+    stock = stock_full[stock_full.index >= start_ts]
+    index = index_full[index_full.index >= start_ts]
+    # 1일 등 짧은 기간에 거래일이 1개뿐이면 직전 거래일을 포함해 최소 2개 확보
+    if len(stock) < 2:
+        stock = stock_full.tail(2)
+        index = index_full.tail(2)
+
+    st.caption(
+        f"**{start_date:%Y-%m-%d}** 를 시작점(=100)으로 비교합니다. "
+        "오른쪽 그래프가 0보다 위면 시장 대비 강세, 빨간 점선(매도 기준)에 닿으면 계획 도달입니다."
+    )
+
+    s_norm = M.normalize_to_100(stock)
+    i_norm = M.normalize_to_100(index)
+    excess = M.excess_return_series(stock, index)
+
+    # 기간 중 고점 대비 하락률
+    peak_idx = stock.idxmax()
+    peak_price = float(stock.loc[peak_idx])
+    cur_price = float(stock.iloc[-1])
+    drop_from_peak = (cur_price / peak_price - 1.0) * 100.0 if peak_price else 0.0
+    peak_norm = float(s_norm.loc[peak_idx])
+    cur_norm = float(s_norm.iloc[-1])
+    last_idx = s_norm.index[-1]
+    is_below_peak = drop_from_peak <= -0.05
+
+    rel_view = st.segmented_control(
+        "차트 선택", ["정규화 주가", "지수 대비 초과수익률"],
+        default="정규화 주가", key="rel_view", label_visibility="collapsed",
+    )
+
+    if rel_view in (None, "정규화 주가"):
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=s_norm.index, y=s_norm.values, name=name,
+                                 line=dict(color=UP, width=2.4)))
+        fig.add_trace(go.Scatter(x=i_norm.index, y=i_norm.values, name=idx_label,
+                                 line=dict(color="#888", width=1.8, dash="dot")))
+        # 고점 기준선 + 고점 마커
+        fig.add_hline(y=peak_norm, line=dict(color="#c2c2c2", width=1, dash="dot"))
+        fig.add_trace(go.Scatter(
+            x=[peak_idx], y=[peak_norm], mode="markers+text",
+            marker=dict(color=UP, size=12, symbol="star",
+                        line=dict(color="white", width=1)),
+            text=["고점"], textposition="top center",
+            textfont=dict(size=11, color=UP), name="고점", showlegend=False,
+            hovertemplate=f"고점 {peak_price:,.0f}원 ({peak_idx:%Y-%m-%d})<extra></extra>",
+        ))
+        # 고점과 현재가 사이 간격 표시 (현재가가 고점보다 낮을 때)
+        if is_below_peak:
+            fig.add_shape(type="line", x0=last_idx, x1=last_idx,
+                          y0=cur_norm, y1=peak_norm,
+                          line=dict(color=UP, width=1.4, dash="dot"))
+            fig.add_annotation(
+                x=last_idx, y=(cur_norm + peak_norm) / 2,
+                text=f"고점대비 {drop_from_peak:.1f}%", showarrow=False,
+                font=dict(color=UP, size=11), xanchor="right", xshift=-6,
+                bgcolor="rgba(255,255,255,0.7)",
+            )
+        fig.update_layout(
+            title=dict(text="정규화 주가 (시작=100)", x=0, xanchor="left"),
+            height=400, margin=dict(l=10, r=10, t=50, b=50),
+            legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
+            plot_bgcolor="white", yaxis=dict(gridcolor=GRID), xaxis=dict(gridcolor=GRID),
+            dragmode=False,
+        )
+        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
+
+    if rel_view == "지수 대비 초과수익률":
+        fig2 = go.Figure()
+        pos = excess.clip(lower=0)
+        neg = excess.clip(upper=0)
+        fig2.add_trace(go.Scatter(x=excess.index, y=pos.values, fill="tozeroy",
+                                  mode="none", name="시장 대비 강세", fillcolor="rgba(232,72,85,0.45)"))
+        fig2.add_trace(go.Scatter(x=excess.index, y=neg.values, fill="tozeroy",
+                                  mode="none", name="시장 대비 약세", fillcolor="rgba(45,125,210,0.45)"))
+        fig2.add_hline(y=0, line=dict(color="#444", width=1))
+        fig2.add_hline(
+            y=threshold, line=dict(color=UP, width=1.4, dash="dash"),
+            annotation_text=f"매도 기준 {threshold:+.0f}%p",
+            annotation_position="bottom left",
+            annotation_font=dict(color=UP, size=11),
+        )
+        ymin = min(float(excess.min()), threshold, 0.0)
+        ymax = max(float(excess.max()), 0.0)
+        pad = max((ymax - ymin) * 0.10, 1.0)
+        fig2.update_layout(
+            title=dict(text="지수 대비 누적 초과수익률 (%)", x=0, xanchor="left"),
+            height=400, margin=dict(l=10, r=10, t=50, b=50),
+            legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
+            plot_bgcolor="white",
+            yaxis=dict(gridcolor=GRID, ticksuffix="%", range=[ymin - pad, ymax + pad]),
+            xaxis=dict(gridcolor=GRID),
+            dragmode=False,
+        )
+        st.plotly_chart(fig2, width="stretch", config=PLOTLY_CONFIG)
+
+    cur_excess = float(excess.iloc[-1]) if not excess.empty else None
+    if cur_excess is not None:
+        gap = cur_excess - threshold
+        if cur_excess <= threshold:
+            st.error(
+                f"⚠️ {start_date:%Y-%m-%d} 이후 {name}의 주가는 {idx_label} 대비 "
+                f"**{cur_excess:+.2f}%p** — 매도 기준({threshold:+.1f}%p)에 도달/이탈했습니다."
+            )
+        else:
+            msg = (
+                f"{start_date:%Y-%m-%d}부터 지금까지 {name}의 주가는 {idx_label} 대비 "
+                f"**{cur_excess:+.2f}%p** 움직였고, 매도 기준({threshold:+.1f}%p)까지 "
+                f"**{gap:+.2f}%p** 남았습니다."
+            )
+            (st.success if cur_excess >= 0 else st.info)(msg)
+
+    # 기간 중 고점 대비 하락률 (고점 대비 매도 기준선 적용)
+    peak_gap = drop_from_peak - peak_threshold
+    if drop_from_peak <= peak_threshold:
+        st.error(
+            f"⚠️ 표시 기간 중 최고가 {peak_price:,.0f}원({peak_idx:%Y-%m-%d}) 대비 현재 "
+            f"**{drop_from_peak:.2f}%** ({cur_price:,.0f}원) — "
+            f"고점 대비 매도 기준({peak_threshold:+.1f}%)에 도달/이탈했습니다."
+        )
+    elif is_below_peak:
+        st.info(
+            f"표시 기간 중 최고가 {peak_price:,.0f}원({peak_idx:%Y-%m-%d}) 대비 현재 "
+            f"**{drop_from_peak:.2f}%** ({cur_price:,.0f}원) 떨어졌고, "
+            f"고점 대비 매도 기준({peak_threshold:+.1f}%)까지 **{peak_gap:+.2f}%p** 남았습니다."
+        )
+    else:
+        st.success(
+            f"현재가 **{cur_price:,.0f}원** 이 표시 기간 중 최고가 수준입니다."
+        )
+
+# ---------------------------------------------------------------- 2) 추세 성장률
+with tab_trend:
+    st.caption("어제·1주·1개월·3개월·6개월·YTD·1년 수익률을 막대로 비교합니다. "
+               "빨강=상승, 파랑=하락. 오른쪽은 '지수 대비' 초과수익률입니다.")
+
+    tbl = returns_tbl.copy()
+    labels = tbl["기간"].tolist()
+
+    trend_view = st.segmented_control(
+        "차트 선택", ["절대 수익률", "지수 대비 초과수익률"],
+        default="절대 수익률", key="trend_view", label_visibility="collapsed",
+    )
+
+    if trend_view in (None, "절대 수익률"):
+        vals = tbl["종목"].tolist()
+        fig3 = go.Figure(go.Bar(
+            x=vals, y=labels, orientation="h",
+            marker_color=[color_for(v) for v in vals],
+            text=[fmt_pct(v) for v in vals], textposition="auto",
+        ))
+        fig3.add_vline(x=0, line=dict(color="#444", width=1))
+        fig3.update_layout(
+            title=dict(text="기간별 절대 수익률 (%)", x=0, xanchor="left"),
+            height=420, margin=dict(l=10, r=10, t=50, b=20),
+            plot_bgcolor="white", xaxis=dict(gridcolor=GRID, ticksuffix="%"),
+            yaxis=dict(autorange="reversed"),
+            dragmode=False,
+        )
+        st.plotly_chart(fig3, width="stretch", config=PLOTLY_CONFIG)
+
+    if trend_view == "지수 대비 초과수익률":
+        vals = tbl["초과"].tolist()
+        fig4 = go.Figure(go.Bar(
+            x=vals, y=labels, orientation="h",
+            marker_color=[color_for(v) for v in vals],
+            text=[fmt_pct(v) for v in vals], textposition="auto",
+        ))
+        fig4.add_vline(x=0, line=dict(color="#444", width=1))
+        fig4.update_layout(
+            title=dict(text=f"기간별 {idx_label} 대비 초과수익률 (%p)", x=0, xanchor="left"),
+            height=420, margin=dict(l=10, r=10, t=50, b=20),
+            plot_bgcolor="white", xaxis=dict(gridcolor=GRID, ticksuffix="%"),
+            yaxis=dict(autorange="reversed"),
+            dragmode=False,
+        )
+        st.plotly_chart(fig4, width="stretch", config=PLOTLY_CONFIG)
+
+    # 표 (색상 히트맵)
+    st.markdown("##### 상세 표")
+    disp = tbl.set_index("기간")
+    styled = (
+        disp.style.format(lambda v: fmt_pct(v))
+        .map(_style)
+        .set_properties(**{"text-align": "right"})
+    )
+    st.dataframe(styled, width="stretch")
 
 st.caption("데이터: FinanceDataReader · 투자 판단의 책임은 본인에게 있습니다.")
