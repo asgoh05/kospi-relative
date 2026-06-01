@@ -269,6 +269,7 @@ query = st.sidebar.text_input(
     label_visibility="collapsed", key="search_query",
 )
 search_code = None
+results: list[tuple[str, str, str]] = []
 if query:
     results = D.search_stocks(query, limit=20)
     if results:
@@ -329,7 +330,12 @@ market = mkt_auto if mkt_choice == "자동" else ("KOSPI" if mkt_choice == "코�
 today = dt.date.today()
 fetch_start = today - dt.timedelta(days=365 * 5 + 30)
 
-name = D.get_name(selected_code)
+# 종목명은 이미 확보한 컨텍스트(상위 20 / 검색 결과)에서 우선 찾는다.
+# 배포 환경에서 상장목록 조회가 실패해도 코드 대신 이름이 보이도록 하는 안전장치.
+name_lookup = {r["code"]: r["name"] for r in ranked}
+name_lookup.update({code: nm for code, nm, _ in results})
+name = name_lookup.get(selected_code) or D.get_name(selected_code)
+
 with cute_loading():
     stock_full = D.get_close(selected_code, fetch_start)
     index_full = D.get_index_close(market, fetch_start)

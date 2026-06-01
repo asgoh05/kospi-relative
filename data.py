@@ -217,6 +217,9 @@ def detect_market(code: str) -> str:
     return "KOSPI"
 
 
+_FALLBACK_NAMES = {code: name for code, name in FALLBACK_TOP_KOSPI}
+
+
 @st.cache_data(ttl=60 * 30, show_spinner=False)
 def get_name(code: str) -> str:
     code = str(code).zfill(6)
@@ -225,7 +228,8 @@ def get_name(code: str) -> str:
         row = df[df["Code"] == code]
         if not row.empty:
             return str(row.iloc[0]["Name"])
-    return code
+    # 상장목록 조회 실패 시: 알려진 상위 종목은 이름으로, 그 외엔 코드로.
+    return _FALLBACK_NAMES.get(code, code)
 
 
 @st.cache_data(ttl=60 * 30, show_spinner=False)
