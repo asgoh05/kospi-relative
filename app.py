@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import html
+from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -22,7 +24,7 @@ st.set_page_config(page_title="국민투자자 모니터", page_icon="🇰🇷",
 st.markdown(
     """
     <style>
-      .block-container {padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1180px;}
+      .block-container {padding-top: 2.8rem; padding-bottom: 3rem; max-width: 1180px;}
       section[data-testid="stSidebar"] {width: 340px !important;}
       [data-testid="stMetricValue"] {font-size: 1.55rem;}
       [data-testid="stMetricLabel"] {opacity: 0.75;}
@@ -99,9 +101,29 @@ st.markdown(
         touch-action: pan-y !important;
       }
       /* 컴팩트 헤더 지표 카드 */
-      .hdr-wrap {margin: 0.1rem 0 0.4rem;}
+      .hdr-wrap {margin: 0.35rem 0 0.5rem; padding-top: 0.5rem;}
       .hdr-title {font-size: 1.55rem; font-weight: 800; color: #1a2230;
-                  letter-spacing: -0.02em; line-height: 1.15;}
+                  letter-spacing: -0.02em; line-height: 1.3; padding-top: 0.1rem;}
+      /* 로딩 오버레이 (화면 중앙) */
+      .lg-overlay {
+        position: fixed; inset: 0; z-index: 9999;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        background: rgba(255, 255, 255, 0.94);
+        pointer-events: none;
+      }
+      .lg-dots { display: flex; gap: 10px; justify-content: center; }
+      .lg-dots span {
+        width: 14px; height: 14px; border-radius: 50%;
+        background: #ff9a8b;
+        animation: lg-bounce 0.6s ease-in-out infinite;
+      }
+      .lg-dots span:nth-child(2) { background: #ffc46b; animation-delay: 0.15s; }
+      .lg-dots span:nth-child(3) { background: #7cc6c4; animation-delay: 0.3s; }
+      @keyframes lg-bounce {
+        0%, 100% { transform: translateY(0); opacity: 0.6; }
+        50% { transform: translateY(-16px); opacity: 1; }
+      }
+      .lg-msg { text-align: center; color: #968d80; font-size: 14px; margin-top: 16px; }
       .hdr-sub {font-size: 0.78rem; color: #8a929e; font-weight: 500;
                 margin: 0.15rem 0 0.7rem;}
       .hdr-sub b {color: #5b6470; font-weight: 700;}
@@ -119,6 +141,18 @@ st.markdown(
       button[data-baseweb="tab"] {font-size: 0.98rem !important;
                                   font-weight: 700 !important;}
       [data-testid="stTabs"] [data-baseweb="tab-list"] {gap: 0.4rem;}
+      /* 토글과 표(상단 툴바) 겹침 방지 */
+      [data-testid="stSegmentedControl"] {
+        margin-bottom: 1rem !important;
+      }
+      .trend-table-spacer { height: 1.25rem; }
+      [data-testid="stDataFrame"] {
+        margin-top: 0.5rem !important;
+        padding-top: 2rem !important;
+      }
+      [data-testid="stDataFrame"] [data-testid="stElementToolbar"] {
+        top: 0.35rem !important;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -136,6 +170,27 @@ PLOTLY_CONFIG = {
     "doubleClick": False,
     "staticPlot": False,
 }
+
+
+def loading_markup(msg: str = "데이터 수집중...") -> str:
+    """화면 중앙 로딩 오버레이 HTML."""
+    return (
+        '<div class="lg-overlay">'
+        '<div class="lg-dots"><span></span><span></span><span></span></div>'
+        f'<p class="lg-msg">{html.escape(msg)}</p>'
+        "</div>"
+    )
+
+
+@contextmanager
+def cute_loading(msg: str = "데이터 수집중..."):
+    """커스텀 로딩 오버레이를 띄운 뒤 작업이 끝나면 제거한다."""
+    slot = st.empty()
+    slot.markdown(loading_markup(msg), unsafe_allow_html=True)
+    try:
+        yield
+    finally:
+        slot.empty()
 
 
 def color_for(v: float | None) -> str:
@@ -222,7 +277,7 @@ st.sidebar.markdown('<p class="sb-head">코스피 상위 20</p>', unsafe_allow_h
 asof = D.last_trading_date()
 st.sidebar.caption(f"시가총액 기준 · {asof:%Y-%m-%d} 종가 · ▲▼는 전일 대비 등락")
 
-with st.spinner("열심히 데이터를 수집하고 있습니다… 📊"):
+with cute_loading():
     ranked = D.get_top_kospi_change(20)
 top_codes = [r["code"] for r in ranked]
 
@@ -268,7 +323,7 @@ today = dt.date.today()
 fetch_start = today - dt.timedelta(days=365 * 5 + 30)
 
 name = D.get_name(selected_code)
-with st.spinner(f"열심히 {name} 시세를 모으는 중이에요… 🐜💨"):
+with cute_loading():
     stock_full = D.get_close(selected_code, fetch_start)
     index_full = D.get_index_close(market, fetch_start)
 
@@ -350,7 +405,60 @@ with tab_rel:
             default_start = today - dt.timedelta(days=preset_days[preset])
         default_start = max(default_start, data_start)
 
-        cset = st.columns([1.2, 1, 1])
+        # 매도 기준 방식 (선택은 URL 쿼리 파라미터에 저장 → 새로고침해도 유지)
+        SELL_MODES = {
+            "idx_start": "지수 대비 (시작일 기준)",
+            "idx_peak": "지수 대비 (기간 내 고점 기준)",
+            "price_peak": "주가 고점 대비",
+        }
+        _sell_labels = list(SELL_MODES.values())
+        _sell_keys = list(SELL_MODES.keys())
+        if "sell_mode" not in st.session_state:
+            _qp = st.query_params.get("sell")
+            st.session_state.sell_mode = SELL_MODES.get(_qp, SELL_MODES["idx_peak"])
+
+        sell_help = (
+            "매도를 결정하는 하락 기준을 고르는 방식입니다.\n\n"
+            "**1. 지수 대비 (시작일 기준)**  \n"
+            "시작일(매수일)을 0으로 두고, 그 이후 종목이 비교 지수보다 "
+            "얼마나 더(또는 덜) 올랐는지(누적 초과수익률, %p)를 봅니다. "
+            "이 값이 기준에 닿으면 매도 신호입니다. "
+            "예: 기준 −10%p → 시작일 대비 지수보다 10%p 뒤처지면 신호.\n\n"
+            "**2. 지수 대비 (기간 내 고점 기준)**  \n"
+            "표시 기간 중 종목 주가가 가장 높았던 날을 새 출발점으로 잡고, "
+            "그날 이후의 지수 대비 초과수익률(%p)을 봅니다. 고점을 찍은 뒤 "
+            "지수 대비 얼마나 약해졌는지를 추적하는 방식입니다. "
+            "예: 기준 −10%p → 고점 이후 지수보다 10%p 더 빠지면 신호.\n\n"
+            "**3. 주가 고점 대비**  \n"
+            "지수와 무관하게, 표시 기간 중 최고가 대비 현재 주가가 "
+            "몇 % 떨어졌는지(절대 하락률, %)만 봅니다. "
+            "예: 기준 −10% → 고점 대비 10% 하락하면 신호."
+        )
+        _mh = st.columns([1, 1])
+        with _mh[0]:
+            st.markdown("**매도 기준 방식**")
+        with _mh[1]:
+            # 모바일에서 hover 툴팁(help=)은 탭하면 깜빡이고 사라지므로
+            # 탭하면 열려서 유지되는 popover 로 설명을 제공한다.
+            with st.popover("ℹ️ 방식 설명", width="stretch"):
+                st.markdown(sell_help)
+
+        sell_label = st.radio(
+            "매도 기준 방식", _sell_labels, key="sell_mode",
+            label_visibility="collapsed",
+        )
+        if not sell_label:  # 선택 해제(None) 시 기본값 유지
+            sell_label = SELL_MODES["idx_peak"]
+        sell_mode = _sell_keys[_sell_labels.index(sell_label)]
+        st.query_params["sell"] = sell_mode
+
+        _thr_label = {
+            "idx_start": "매도 기준 (지수 대비, %p)",
+            "idx_peak": "매도 기준 (고점 이후 지수 대비, %p)",
+            "price_peak": "매도 기준 (주가 고점 대비, %)",
+        }[sell_mode]
+
+        cset = st.columns([1.2, 1])
         with cset[0]:
             if preset == "직접 지정(매수일)":
                 start_date = st.date_input(
@@ -363,14 +471,9 @@ with tab_rel:
 
         with cset[1]:
             threshold = st.number_input(
-                "매도 기준 (지수 대비, %p)", value=-10.0, step=1.0, format="%.1f",
-                help="지수 대비 누적 초과수익률이 이 값에 닿으면 매도하기로 한 계획선",
-            )
-
-        with cset[2]:
-            peak_threshold = st.number_input(
-                "매도 기준 (고점 대비, %)", value=-10.0, step=1.0, format="%.1f",
-                help="표시 기간 중 최고가 대비 하락률이 이 값에 닿으면 매도하기로 한 계획선",
+                _thr_label, value=-10.0, step=1.0, format="%.1f",
+                key="sell_threshold",
+                help="선택한 매도 기준 방식이 이 값에 닿으면 매도하기로 한 계획선입니다.",
             )
 
     start_ts = pd.Timestamp(start_date)
@@ -399,6 +502,16 @@ with tab_rel:
     cur_norm = float(s_norm.iloc[-1])
     last_idx = s_norm.index[-1]
     is_below_peak = drop_from_peak <= -0.05
+
+    # 옵션 2용: 주가 고점 날짜를 새 시작점으로 한 지수 대비 초과수익률
+    idx_at_peak = M._value_asof(index, peak_idx)
+    idx_cur = float(index.iloc[-1]) if not index.empty else None
+    if idx_at_peak and idx_at_peak != 0 and peak_price and idx_cur is not None:
+        excess_from_peak = (
+            (cur_price / peak_price - 1.0) - (idx_cur / idx_at_peak - 1.0)
+        ) * 100.0
+    else:
+        excess_from_peak = None
 
     rel_view = st.segmented_control(
         "차트 선택", ["정규화 주가", "지수 대비 초과수익률"],
@@ -432,6 +545,15 @@ with tab_rel:
                 font=dict(color=UP, size=11), xanchor="right", xshift=-6,
                 bgcolor="rgba(255,255,255,0.7)",
             )
+        # 주가 고점 대비 매도 기준선 (옵션 3 선택 시)
+        if sell_mode == "price_peak":
+            sell_level = peak_norm * (1.0 + threshold / 100.0)
+            fig.add_hline(
+                y=sell_level, line=dict(color=UP, width=1.4, dash="dash"),
+                annotation_text=f"매도 기준 {threshold:+.0f}%",
+                annotation_position="bottom right",
+                annotation_font=dict(color=UP, size=11),
+            )
         fig.update_layout(
             title=dict(text="정규화 주가 (시작=100)", x=0, xanchor="left"),
             height=400, margin=dict(l=10, r=10, t=50, b=50),
@@ -450,13 +572,16 @@ with tab_rel:
         fig2.add_trace(go.Scatter(x=excess.index, y=neg.values, fill="tozeroy",
                                   mode="none", name="시장 대비 약세", fillcolor="rgba(45,125,210,0.45)"))
         fig2.add_hline(y=0, line=dict(color="#444", width=1))
-        fig2.add_hline(
-            y=threshold, line=dict(color=UP, width=1.4, dash="dash"),
-            annotation_text=f"매도 기준 {threshold:+.0f}%p",
-            annotation_position="bottom left",
-            annotation_font=dict(color=UP, size=11),
-        )
-        ymin = min(float(excess.min()), threshold, 0.0)
+        if sell_mode == "idx_start":
+            fig2.add_hline(
+                y=threshold, line=dict(color=UP, width=1.4, dash="dash"),
+                annotation_text=f"매도 기준 {threshold:+.0f}%p",
+                annotation_position="bottom left",
+                annotation_font=dict(color=UP, size=11),
+            )
+            ymin = min(float(excess.min()), threshold, 0.0)
+        else:
+            ymin = min(float(excess.min()), 0.0)
         ymax = max(float(excess.max()), 0.0)
         pad = max((ymax - ymin) * 0.10, 1.0)
         fig2.update_layout(
@@ -470,51 +595,73 @@ with tab_rel:
         )
         st.plotly_chart(fig2, width="stretch", config=PLOTLY_CONFIG)
 
-    cur_excess = float(excess.iloc[-1]) if not excess.empty else None
-    if cur_excess is not None:
-        gap = cur_excess - threshold
-        if cur_excess <= threshold:
+    # 선택된 매도 기준 방식에 해당하는 메시지 하나만 표시
+    if sell_mode == "idx_start":
+        cur_excess = float(excess.iloc[-1]) if not excess.empty else None
+        if cur_excess is not None:
+            gap = cur_excess - threshold
+            if cur_excess <= threshold:
+                st.error(
+                    f"⚠️ {start_date:%Y-%m-%d} 이후 {name}의 주가는 {idx_label} 대비 "
+                    f"**{cur_excess:+.2f}%p** — 매도 기준({threshold:+.1f}%p)에 도달/이탈했습니다."
+                )
+            else:
+                msg = (
+                    f"{start_date:%Y-%m-%d}부터 지금까지 {name}의 주가는 {idx_label} 대비 "
+                    f"**{cur_excess:+.2f}%p** 움직였고, 매도 기준({threshold:+.1f}%p)까지 "
+                    f"**{gap:+.2f}%p** 남았습니다."
+                )
+                (st.success if cur_excess >= 0 else st.info)(msg)
+
+    elif sell_mode == "idx_peak":
+        if excess_from_peak is not None:
+            gap = excess_from_peak - threshold
+            if excess_from_peak <= threshold:
+                st.error(
+                    f"⚠️ 주가 고점 {peak_price:,.0f}원({peak_idx:%Y-%m-%d}) 이후 {name}는 "
+                    f"{idx_label} 대비 **{excess_from_peak:+.2f}%p** — "
+                    f"매도 기준({threshold:+.1f}%p)에 도달/이탈했습니다."
+                )
+            else:
+                msg = (
+                    f"주가 고점({peak_idx:%Y-%m-%d}) 이후 {name}는 {idx_label} 대비 "
+                    f"**{excess_from_peak:+.2f}%p**이고, 매도 기준({threshold:+.1f}%p)까지 "
+                    f"**{gap:+.2f}%p** 남았습니다."
+                )
+                (st.success if excess_from_peak >= 0 else st.info)(msg)
+        else:
+            st.info("고점 기준 초과수익률을 계산할 데이터가 부족합니다.")
+
+    else:  # price_peak
+        peak_gap = drop_from_peak - threshold
+        if drop_from_peak <= threshold:
             st.error(
-                f"⚠️ {start_date:%Y-%m-%d} 이후 {name}의 주가는 {idx_label} 대비 "
-                f"**{cur_excess:+.2f}%p** — 매도 기준({threshold:+.1f}%p)에 도달/이탈했습니다."
+                f"⚠️ 표시 기간 중 최고가 {peak_price:,.0f}원({peak_idx:%Y-%m-%d}) 대비 현재 "
+                f"**{drop_from_peak:.2f}%** ({cur_price:,.0f}원) — "
+                f"매도 기준({threshold:+.1f}%)에 도달/이탈했습니다."
+            )
+        elif is_below_peak:
+            st.info(
+                f"표시 기간 중 최고가 {peak_price:,.0f}원({peak_idx:%Y-%m-%d}) 대비 현재 "
+                f"**{drop_from_peak:.2f}%** ({cur_price:,.0f}원)이고, "
+                f"매도 기준({threshold:+.1f}%)까지 **{peak_gap:+.2f}%p** 남았습니다."
             )
         else:
-            msg = (
-                f"{start_date:%Y-%m-%d}부터 지금까지 {name}의 주가는 {idx_label} 대비 "
-                f"**{cur_excess:+.2f}%p** 움직였고, 매도 기준({threshold:+.1f}%p)까지 "
-                f"**{gap:+.2f}%p** 남았습니다."
+            st.success(
+                f"현재가 **{cur_price:,.0f}원** 이 표시 기간 중 최고가 수준입니다."
             )
-            (st.success if cur_excess >= 0 else st.info)(msg)
-
-    # 기간 중 고점 대비 하락률 (고점 대비 매도 기준선 적용)
-    peak_gap = drop_from_peak - peak_threshold
-    if drop_from_peak <= peak_threshold:
-        st.error(
-            f"⚠️ 표시 기간 중 최고가 {peak_price:,.0f}원({peak_idx:%Y-%m-%d}) 대비 현재 "
-            f"**{drop_from_peak:.2f}%** ({cur_price:,.0f}원) — "
-            f"고점 대비 매도 기준({peak_threshold:+.1f}%)에 도달/이탈했습니다."
-        )
-    elif is_below_peak:
-        st.info(
-            f"표시 기간 중 최고가 {peak_price:,.0f}원({peak_idx:%Y-%m-%d}) 대비 현재 "
-            f"**{drop_from_peak:.2f}%** ({cur_price:,.0f}원) 떨어졌고, "
-            f"고점 대비 매도 기준({peak_threshold:+.1f}%)까지 **{peak_gap:+.2f}%p** 남았습니다."
-        )
-    else:
-        st.success(
-            f"현재가 **{cur_price:,.0f}원** 이 표시 기간 중 최고가 수준입니다."
-        )
 
 # ---------------------------------------------------------------- 2) 추세 성장률
 with tab_trend:
-    st.caption("어제·1주·1개월·3개월·6개월·YTD·1년 수익률을 막대로 비교합니다. "
-               "빨강=상승, 파랑=하락. 오른쪽은 '지수 대비' 초과수익률입니다.")
+    st.caption("어제·1주·1개월·3개월·6개월·YTD·1년 수익률을 비교합니다. "
+               "빨강=상승, 파랑=하락. 아래에서 절대·초과수익률·상세 표를 전환할 수 있습니다.")
 
     tbl = returns_tbl.copy()
     labels = tbl["기간"].tolist()
 
     trend_view = st.segmented_control(
-        "차트 선택", ["절대 수익률", "지수 대비 초과수익률"],
+        "보기 선택",
+        ["절대 수익률", "지수 대비 초과수익률", "상세표"],
         default="절대 수익률", key="trend_view", label_visibility="collapsed",
     )
 
@@ -552,14 +699,15 @@ with tab_trend:
         )
         st.plotly_chart(fig4, width="stretch", config=PLOTLY_CONFIG)
 
-    # 표 (색상 히트맵)
-    st.markdown("##### 상세 표")
-    disp = tbl.set_index("기간")
-    styled = (
-        disp.style.format(lambda v: fmt_pct(v))
-        .map(_style)
-        .set_properties(**{"text-align": "right"})
-    )
-    st.dataframe(styled, width="stretch")
+    if trend_view == "상세표":
+        st.markdown('<div class="trend-table-spacer" aria-hidden="true"></div>',
+                    unsafe_allow_html=True)
+        disp = tbl.set_index("기간")
+        styled = (
+            disp.style.format(lambda v: fmt_pct(v))
+            .map(_style)
+            .set_properties(**{"text-align": "right"})
+        )
+        st.dataframe(styled, width="stretch")
 
 st.caption("데이터: FinanceDataReader · 투자 판단의 책임은 본인에게 있습니다.")
