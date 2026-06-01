@@ -30,6 +30,36 @@ def normalize_to_100(s: pd.Series) -> pd.Series:
     return s / base * 100.0
 
 
+def moving_average(s: pd.Series, window: int = 14) -> pd.Series:
+    """window 일 단순 이동평균선 (앞쪽 NaN 제거)."""
+    return s.dropna().rolling(window).mean().dropna()
+
+
+def ma_rate(s: pd.Series, window: int = 14) -> float | None:
+    """window 일 이동평균선의 최근 1거래일 등락률(%) = (MA_t/MA_{t-1} - 1)*100.
+
+    이동평균을 먼저 구해 노이즈를 줄인 뒤, 그 '평균선' 자체의 하루치 기울기를 본다.
+    데이터가 부족하면 None.
+    """
+    ma = moving_average(s, window)
+    if len(ma) < 2 or ma.iloc[-2] == 0:
+        return None
+    return (ma.iloc[-1] / ma.iloc[-2] - 1.0) * 100.0
+
+
+def ma_rate_excess(
+    stock: pd.Series, index: pd.Series, window: int = 14
+) -> tuple[float | None, float | None, float | None]:
+    """종목/지수 각각의 이동평균선 등락률과 그 차이(초과, %p)를 반환.
+
+    (stock_ma_rate, index_ma_rate, excess) — excess = stock - index.
+    """
+    sr = ma_rate(stock, window)
+    ir = ma_rate(index, window)
+    ex = (sr - ir) if (sr is not None and ir is not None) else None
+    return sr, ir, ex
+
+
 def align(a: pd.Series, b: pd.Series) -> tuple[pd.Series, pd.Series]:
     """두 시계열을 공통 날짜로 정렬."""
     df = pd.concat([a.rename("a"), b.rename("b")], axis=1).dropna()

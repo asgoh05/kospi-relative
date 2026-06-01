@@ -256,18 +256,25 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
+def _select_from_list(code: str) -> None:
+    """상위 20에서 종목 클릭 시: 리스트 선택을 갱신하고 검색을 초기화한다."""
+    st.session_state.list_code = code
+    st.session_state.search_query = ""  # 검색어 비우기 → 검색 결과 위젯도 사라짐
+
+
 # 1) 검색 — 가장 핵심 동선
 st.sidebar.markdown('<p class="sb-head">종목 검색</p>', unsafe_allow_html=True)
 query = st.sidebar.text_input(
     "종목 검색", placeholder="종목명 또는 코드 (예: 카카오, 035720)",
-    label_visibility="collapsed",
+    label_visibility="collapsed", key="search_query",
 )
 search_code = None
 if query:
     results = D.search_stocks(query, limit=20)
     if results:
         res_labels = [f"{name} · {code} · {mk}" for code, name, mk in results]
-        chosen = st.sidebar.selectbox("검색 결과", res_labels, label_visibility="collapsed")
+        chosen = st.sidebar.selectbox("검색 결과", res_labels,
+                                      label_visibility="collapsed", key="search_choice")
         search_code = chosen.split(" · ")[1]
     else:
         st.sidebar.caption("검색 결과가 없습니다.")
@@ -284,29 +291,29 @@ top_codes = [r["code"] for r in ranked]
 if "list_code" not in st.session_state or st.session_state.list_code not in top_codes:
     st.session_state.list_code = top_codes[0]
 
+# 검색 중이면 검색 종목이 활성 종목. 없으면 리스트 선택이 활성 종목.
+selected_code = search_code or st.session_state.list_code
+
 list_box = st.sidebar.container(height=300)
 for r in ranked:
-    code, is_sel = r["code"], st.session_state.list_code == r["code"]
+    code = r["code"]
+    # 하이라이트는 '현재 활성 종목' 기준 → 검색 종목이 리스트에 있으면 함께 표시,
+    # 리스트에 없으면 아무 것도 선택되지 않은 상태로 보인다.
+    is_sel = code == selected_code
     c_rank, c_name, c_chg = list_box.columns([0.1, 0.62, 0.28], gap="small")
     with c_rank:
         st.markdown(f'<div class="top20-rank">{r["rank"]}</div>', unsafe_allow_html=True)
     with c_name:
-        if st.button(
+        st.button(
             truncate_name(r["name"]),
             key=f"top_{code}",
             help=r["name"] if r["name"] != truncate_name(r["name"]) else None,
             use_container_width=True,
             type="primary" if is_sel else "secondary",
-        ):
-            st.session_state.list_code = code
-            st.rerun()
+            on_click=_select_from_list, args=(code,),
+        )
     with c_chg:
         st.markdown(chg_html(r["chg"]), unsafe_allow_html=True)
-
-list_code = st.session_state.list_code
-
-# 검색이 우선, 없으면 상위 20 선택
-selected_code = search_code or list_code
 
 # 3) 부수 설정은 접어둔다 (기간은 '코스피 대비 성과' 섹션 안에서 조절)
 mkt_auto = D.detect_market(selected_code)
@@ -355,11 +362,24 @@ ex_card = ('<div class="mcard"><div class="ml">지수 대비(전일)</div>'
            '<div class="md" style="color:#9aa0a8;font-weight:500">'
            '종목−지수 등락</div></div>')
 
+# 14일 이동평균선끼리 비교한 등락(rate-of-MA) 초과분
+_, _, ex_ma = M.ma_rate_excess(stock_full, index_full, 14)
+if ex_ma is not None and not pd.isna(ex_ma):
+    ma_color = UP if ex_ma >= 0 else DOWN
+    ma_val = f'<span style="color:{ma_color}">{ex_ma:+.2f}%p</span>'
+else:
+    ma_val = "—"
+ma_card = ('<div class="mcard"><div class="ml">지수 대비(14일 평균선)</div>'
+           f'<div class="mv">{ma_val}</div>'
+           '<div class="md" style="color:#9aa0a8;font-weight:500">'
+           '14일선 등락 비교</div></div>')
+
 cards = (
     metric_card("현재가", f"{last_price:,.0f}원", row_1d["종목"])
     + metric_card(f"{idx_label} 지수",
                   f"{idx_last:,.2f}" if idx_last is not None else "—", row_1d["지수"])
     + ex_card
+    + ma_card
 )
 st.markdown(
     f"""
@@ -410,6 +430,7 @@ with tab_rel:
             "idx_start": "지수 대비 (시작일 기준)",
             "idx_peak": "지수 대비 (기간 내 고점 기준)",
             "price_peak": "주가 고점 대비",
+            "ma_excess": "지수 대비 (14일 평균선)",
         }
         _sell_labels = list(SELL_MODES.values())
         _sell_keys = list(SELL_MODES.keys())
@@ -432,7 +453,13 @@ with tab_rel:
             "**3. 주가 고점 대비**  \n"
             "지수와 무관하게, 표시 기간 중 최고가 대비 현재 주가가 "
             "몇 % 떨어졌는지(절대 하락률, %)만 봅니다. "
-            "예: 기준 −10% → 고점 대비 10% 하락하면 신호."
+            "예: 기준 −10% → 고점 대비 10% 하락하면 신호.\n\n"
+            "**4. 지수 대비 (14일 평균선)**  \n"
+            "종목과 지수를 각각 14일 이동평균으로 매끄럽게 만든 뒤, 두 평균선의 "
+            "하루치 등락률(기울기)을 비교합니다. 종목 평균선이 지수 평균선보다 "
+            "얼마나 더(덜) 오르는지(%p/일)를 보는 단기 추세 신호입니다. "
+            "잡음이 줄어 휩쏘를 덜 타며, 이 값이 기준 아래로 내려가면 신호입니다. "
+            "예: 기준 0%p → 14일선 기준 추세가 지수보다 약해지면 신호."
         )
         _mh = st.columns([1, 1])
         with _mh[0]:
@@ -456,6 +483,7 @@ with tab_rel:
             "idx_start": "매도 기준 (지수 대비, %p)",
             "idx_peak": "매도 기준 (고점 이후 지수 대비, %p)",
             "price_peak": "매도 기준 (주가 고점 대비, %)",
+            "ma_excess": "매도 기준 (14일선 지수 대비, %p/일)",
         }[sell_mode]
 
         cset = st.columns([1.2, 1])
@@ -632,7 +660,7 @@ with tab_rel:
         else:
             st.info("고점 기준 초과수익률을 계산할 데이터가 부족합니다.")
 
-    else:  # price_peak
+    elif sell_mode == "price_peak":
         peak_gap = drop_from_peak - threshold
         if drop_from_peak <= threshold:
             st.error(
@@ -650,6 +678,24 @@ with tab_rel:
             st.success(
                 f"현재가 **{cur_price:,.0f}원** 이 표시 기간 중 최고가 수준입니다."
             )
+
+    else:  # ma_excess (14일 평균선 등락 비교)
+        if ex_ma is not None and not pd.isna(ex_ma):
+            gap = ex_ma - threshold
+            if ex_ma <= threshold:
+                st.error(
+                    f"⚠️ 14일 평균선 기준 {name}의 추세는 {idx_label} 대비 "
+                    f"**{ex_ma:+.2f}%p/일** — 매도 기준({threshold:+.1f}%p)에 도달/이탈했습니다."
+                )
+            else:
+                msg = (
+                    f"14일 평균선 기준 {name}의 추세는 {idx_label} 대비 "
+                    f"**{ex_ma:+.2f}%p/일**이고, 매도 기준({threshold:+.1f}%p)까지 "
+                    f"**{gap:+.2f}%p** 남았습니다."
+                )
+                (st.success if ex_ma >= 0 else st.info)(msg)
+        else:
+            st.info("14일 이동평균을 계산할 데이터가 부족합니다.")
 
 # ---------------------------------------------------------------- 2) 추세 성장률
 with tab_trend:

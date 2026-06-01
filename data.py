@@ -8,21 +8,26 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import sys
 
 import requests
 
 
 def _disable_proxies() -> None:
-    """모든 requests 세션이 프록시 자동탐지를 하지 않도록 만든다.
+    """로컬 macOS 환경에서만 프록시 자동탐지를 끈다.
 
-    원인: 일부 환경(예: Cursor 통합 터미널, macOS 시스템 프록시 설정)은
+    원인: 일부 로컬 환경(예: Cursor 통합 터미널, macOS 시스템 프록시 설정)은
     죽은 로컬 프록시(127.0.0.1:xxxxx)를 주입한다. requests 는 환경변수뿐 아니라
     macOS 시스템 프록시 설정까지 자동으로 읽기 때문에, 환경변수만 지워서는 부족하다.
     여기서는 세션의 trust_env 를 끄고 NO_PROXY 를 전체로 설정해 항상 직접 연결한다.
 
-    회사망 등에서 '반드시 프록시를 거쳐야' 인터넷이 되는 환경이라면
-    USE_SYSTEM_PROXY=1 환경변수를 주면 이 동작을 끌 수 있다.
+    배포 환경(Streamlit Cloud, Linux)에서는 이 문제가 없고 전역 monkeypatch 는
+    불필요하므로, macOS 가 아니면 아무 것도 하지 않는다.
+    회사망 등에서 '반드시 프록시를 거쳐야' 하는 macOS 라면
+    USE_SYSTEM_PROXY=1 환경변수로 이 동작을 끌 수 있다.
     """
+    if sys.platform != "darwin":  # 문제가 발생하는 건 로컬 macOS 뿐
+        return
     if os.environ.get("USE_SYSTEM_PROXY") == "1":
         return
 
@@ -84,10 +89,22 @@ def load_krx_listing() -> pd.DataFrame:
     """KRX 전체 상장 종목 목록을 반환한다. (Code, Name, Market, Marcap)"""
     df = fdr.StockListing("KRX")
     df = df.rename(columns={c: c.strip() for c in df.columns})
-    keep = [c for c in ["Code", "Name", "Market", "Marcap"] if c in df.columns]
+    # 등락률 컬럼은 FDR 버전마다 철자가 다르다(ChagesRatio 오타 포함). 있으면 보존한다.
+    chg_cols = [c for c in ("ChagesRatio", "ChangesRatio", "ChangeRatio")
+                if c in df.columns]
+    keep = [c for c in ["Code", "Name", "Market", "Marcap", "Close", *chg_cols]
+            if c in df.columns]
     df = df[keep].dropna(subset=["Code", "Name"]).copy()
     df["Code"] = df["Code"].astype(str).str.zfill(6)
     return df
+
+
+def _listing_chg_col(df: pd.DataFrame) -> str | None:
+    """상장 목록에서 전일 대비 등락률 컬럼명을 찾는다(버전별 철자 차이 대응)."""
+    for c in ("ChagesRatio", "ChangesRatio", "ChangeRatio"):
+        if c in df.columns:
+            return c
+    return None
 
 
 def _safe_listing() -> pd.DataFrame | None:
@@ -140,13 +157,33 @@ def get_top_kospi_change(n: int = 20) -> list[dict]:
 
     각 항목: {code, name, rank, chg} (chg: 전일 대비 등락률 %, None 가능)
     순위는 최근 영업일 종가 기준 시가총액 순서이며, 캐시 만료(30분)마다 갱신된다.
+
+    성능: 상장 목록(StockListing)에 이미 등락률 컬럼이 있으면 그대로 사용해
+    종목별 추가 시세 호출(n번)을 모두 생략한다. 컬럼이 없을 때만 폴백으로 계산한다.
     """
+    df = _safe_listing()
+    if df is not None and "Market" in df.columns and "Marcap" in df.columns:
+        kospi = df[df["Market"].str.upper().str.contains("KOSPI", na=False)]
+        if kospi["Marcap"].notna().any():
+            kospi = kospi.sort_values("Marcap", ascending=False).head(n)
+            chg_col = _listing_chg_col(kospi)
+            out = []
+            for i, (_, row) in enumerate(kospi.iterrows()):
+                chg = None
+                if chg_col is not None and pd.notna(row.get(chg_col)):
+                    try:
+                        chg = float(row[chg_col])
+                    except (TypeError, ValueError):
+                        chg = None
+                out.append({"code": str(row["Code"]).zfill(6),
+                            "name": str(row["Name"]), "rank": i + 1, "chg": chg})
+            if out:
+                return out
+
+    # 폴백: 목록/등락 컬럼을 못 구하면 종목별로 계산한다.
     pairs = get_top_kospi(n)
-    out = []
-    for i, (code, name) in enumerate(pairs):
-        out.append({"code": code, "name": name, "rank": i + 1,
-                    "chg": prev_day_change(code)})
-    return out
+    return [{"code": code, "name": name, "rank": i + 1, "chg": prev_day_change(code)}
+            for i, (code, name) in enumerate(pairs)]
 
 
 @st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
@@ -193,8 +230,15 @@ def get_name(code: str) -> str:
 
 @st.cache_data(ttl=60 * 30, show_spinner=False)
 def get_close(symbol: str, start: dt.date) -> pd.Series:
-    """심볼(종목코드 또는 지수코드)의 종가 시계열을 반환한다."""
-    df = fdr.DataReader(symbol, start)
+    """심볼(종목코드 또는 지수코드)의 종가 시계열을 반환한다.
+
+    네트워크/파싱 오류가 나면 트레이스백을 노출하지 않고 빈 시리즈를 반환한다.
+    (호출부에서 .empty 로 판단해 깔끔한 에러 메시지를 보여줄 수 있다.)
+    """
+    try:
+        df = fdr.DataReader(symbol, start)
+    except Exception:
+        return pd.Series(dtype="float64")
     if df is None or df.empty or "Close" not in df.columns:
         return pd.Series(dtype="float64")
     s = df["Close"].dropna()
